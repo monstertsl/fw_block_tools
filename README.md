@@ -1,6 +1,6 @@
-# 设备联调工具（Windows 独立运行）
+# 防火墙快速添加单个/批量黑名单工具（Windows 独立运行）
 
-与奇安信(qianixn)、深信服(sangfor)、天融信(topsec)等防火墙的对接：登录、查询、封禁、解封、批量导入封禁。
+从 [**SenseMind**](https://github.com/monstertsl/SenseMind) 项目提取分离出的独立脚本，与奇安信(qianixn)、深信服(sangfor)、天融信(topsec)等防火墙的对接：登录、查询、封禁、解封、批量导入封禁。
 **零第三方依赖**（网络 `urllib`、界面 `tkinter`、表格解析 `zipfile`/`xml`、天融信口令加密为内置 AES 实现），
 Windows 官方 Python 装好即可运行，不用 `pip install`。
 
