@@ -85,7 +85,7 @@ class SangforAF:
         # 地址对象不存在时的确认回调（界面从后台线程弹确认框），返回 True 才新建
         self.confirm_create = confirm_create
         self.token = ""
-        self._log = log or (lambda _msg: None)
+        self._log = log or (lambda _msg, **_kw: None)
 
     @property
     def authenticated(self) -> bool:
@@ -376,12 +376,15 @@ class SangforAF:
             raise ToolError(f"新建地址对象失败（HTTP {status}）：{text[:200]}")
         self._ensure_ok(self._json(text, "新建地址对象"), "新建地址对象", status)
 
-    def _patch_address(self, name: str, ip: str, op: str) -> None:
-        """增量增删地址对象成员：_arrayop=add|remove，只带这一行 ipRanges。
+    def _patch_address(self, name: str, ip, op: str) -> None:
+        """增量增删地址对象成员：_arrayop=add|remove，只带变化的 ipRanges 行。
 
+        ip 传单个字符串或字符串列表（列表即一次增删多行）；文档 body 是数组，
+        多元素一次提交在设备支持时能大幅减少请求数。
         body 包裹方式与新建同理：先扁平，无效参数时再 {"netobj": …} 包裹重试。
         """
-        body = {"name": name, "businessType": "IP", "ipRanges": [{"start": ip}]}
+        elements = [{"start": ip}] if isinstance(ip, str) else [{"start": t} for t in ip]
+        body = {"name": name, "businessType": "IP", "ipRanges": elements}
         verb = "添加" if op == "add" else "删除"
         status, text = self._request(
             "PATCH", f"{self.base_path}/ipgroups/{parse.quote(name)}", body=body, params={"_arrayop": op}
@@ -646,17 +649,18 @@ class SangforAF:
                 self._log(f"   判定：设备上是{entry_kind(data)}，不算封禁")
         return results
 
-    def block(self, ip: str, desc: str = BLACK_DESCRIPTION) -> str:
+    def block(self, ip: str, desc: str = BLACK_DESCRIPTION, hint: bool = True) -> str:
         target = check_ip(ip)
-        # 封禁前先反查：IP 已在某个网络对象中就提示（不阻断，继续封禁）
-        hint = self._block_hint(target)
+        # 封禁前先反查：IP 已在某个网络对象中就提示（不阻断，继续封禁）；
+        # 批量模式下由界面传 hint=False 跳过反查，提速
+        hint_names = self._block_hint(target) if hint else ""
         if self.use_address:
             self._log(f"封禁 {target}（地址对象 {self.address_name}）")
             result = self._address_add(target, desc)
         else:
             result = self._blacklist_block(target, desc)
-        if hint:
-            result = f"{result}（提示：该 IP 已在网络对象「{hint}」中）"
+        if hint_names:
+            result = f"{result}（提示：该 IP 已在网络对象「{hint_names}」中）"
         return result
 
     def _blacklist_block(self, target: str, desc: str) -> str:
@@ -703,5 +707,186 @@ class SangforAF:
         self._ensure_ok(self._json(text, "删除黑名单"), "删除黑名单", status)
         self._log(f"   成功：{target} 已从黑名单删除")
         return f"{target} 已从黑名单删除"
+
+    # ---------- 黑名单批量接口（/api/batch/v1，一次请求写多条） ----------
+    # 仅黑名单走批量；地址对象保持旧的逐 IP 模式。
+    # 文档未标注单次条数上限，实现为被拒时自动减半重试的自适应分块，
+    # 减到 1 仍失败才报错；提取 IP 超过 1000 时每批 1000 条，否则整批一次提交。
+
+    BIG_BATCH = 1000        # 超过该数量时每批 1000 条
+    BIG_CHUNK = 1000
+
+    @staticmethod
+    def _unique_targets(ips: list) -> tuple[list[str], int]:
+        """去重 + 校验，返回 (合法目标列表, 非法个数)。"""
+        targets: list[str] = []
+        seen: set[str] = set()
+        invalid = 0
+        for ip in ips:
+            try:
+                t = check_ip(ip)
+            except ToolError:
+                invalid += 1
+                continue
+            if t not in seen:
+                seen.add(t)
+                targets.append(t)
+        return targets, invalid
+
+    def _pick_chunk(self, count: int, requested: int | None) -> int:
+        """分块大小：显式指定优先；提取量超过 1000 每批 1000，否则整批一次提交。"""
+        if requested:
+            return requested
+        return self.BIG_CHUNK if count > self.BIG_BATCH else max(count, 1)
+
+    @staticmethod
+    def _halving_wont_help(message: str) -> bool:
+        """请求形状/参数定义类错误：减半重试无意义，直接抛出让调用方回退逐 IP。"""
+        tokens = ("参数类型不匹配", "缺少参数", "参数缺失", "格式错误", "不支持该")
+        return any(t in message for t in tokens)
+
+    def _batch_path(self) -> str:
+        return self.base_path.replace("/api/v1/", "/api/batch/v1/")
+
+    def fetch_blacklist(self) -> list[dict]:
+        """分页拉取全部黑白名单条目（批量解封前本地筛选用）。"""
+        items: list[dict] = []
+        page_size = 200
+        start = 0
+        while True:
+            params = {"_start": start, "_length": page_size}
+            status, text = self._request("GET", f"{self.base_path}/whiteblacklist", params=params)
+            if status >= 400:
+                raise ToolError(f"获取黑白名单列表失败（HTTP {status}）：{text[:200]}")
+            payload = self._json(text, "获取黑白名单列表")
+            self._ensure_ok(payload, "获取黑白名单列表", status)
+            data = payload.get("data")
+            batch = data.get("items") if isinstance(data, dict) else (data if isinstance(data, list) else None)
+            if not isinstance(batch, list):
+                self._log("   列表响应没有 items 字段，按无条目处理")
+                break
+            items.extend(item for item in batch if isinstance(item, dict))
+            if len(batch) < page_size:
+                break
+            start += len(batch)
+            if start > 200000:
+                self._log("   黑白名单数量异常，停止分页")
+                break
+        self._log(f"共取到 {len(items)} 条黑白名单条目")
+        return items
+
+    def _batch_submit(self, part: list[dict], op: str) -> None:
+        """调用 /api/batch/v1/whiteblacklist 提交一批（op: add/delete）。
+
+        body 是裸数组（文档 obj: object[]，实测 {"obj": …} 包裹会被设备以
+        「黑白名单：参数类型不匹配」拒绝）。
+        """
+        params: dict = {}
+        if op == "add":
+            params["override"] = "SKIP"  # 冲突（已存在）自动跳过，无需预先逐条查重
+        if op == "delete":
+            params["_method"] = "delete"  # 文档：批量删除用 POST + _method=delete
+        verb = "添加" if op == "add" else "删除"
+        status, text = self._request(
+            "POST", f"{self._batch_path()}/whiteblacklist", body=part, params=params
+        )
+        if status >= 400:
+            raise ToolError(f"批量{verb}黑名单失败（HTTP {status}）：{text[:200]}")
+        self._ensure_ok(self._json(text, f"批量{verb}黑名单"), f"批量{verb}黑名单", status)
+
+    def batch_block_blacklist(self, ips: list, desc: str = "", should_stop=None, chunk: int | None = None) -> dict:
+        """批量写黑名单：一次请求写多条，冲突自动跳过，不做逐 IP 反查。"""
+        targets, invalid = self._unique_targets(ips)
+        if invalid:
+            self._log(f"   {invalid} 个非法/空 IP 忽略", quiet=False)
+        dup = len(ips) - invalid - len(targets)
+        if dup:
+            self._log(f"   {dup} 个重复 IP 已去重", quiet=False)
+        if not targets:
+            return {"ok": 0, "skipped": len(ips), "failed": 0, "total": len(ips)}
+        size = self._pick_chunk(len(targets), chunk)
+        final_desc = (desc or "").strip() or BLACK_DESCRIPTION
+        # 官方请求样例每条只有 description/url/type 三个字段（enable 不在样例中，
+        # 多发字段可能触发「参数类型不匹配」，默认启用交给设备）
+        entries = [
+            {"description": final_desc, "url": t, "type": "BLACK"}
+            for t in targets
+        ]
+        self._log(
+            f"批量添加黑名单 {len(entries)} 条，分 {(len(entries) + size - 1) // size} 批提交"
+            f"（每批 {size} 条，冲突自动跳过）",
+            quiet=False,
+        )
+        ok = 0
+        batches = 0
+        pos = 0
+        while pos < len(entries):
+            if should_stop is not None and should_stop():
+                self._log(f"   已停止：剩余 {len(entries) - pos} 条未提交", quiet=False)
+                break
+            part = entries[pos:pos + size]
+            try:
+                self._batch_submit(part, "add")
+            except ToolError as exc:
+                if self._halving_wont_help(str(exc)) or size <= 1:
+                    raise
+                size = max(1, size // 2)
+                self._log(f"   批量请求被拒（{str(exc)[:120]}），单次条数降为 {size} 重试本批")
+                continue
+            pos += len(part)
+            ok += len(part)
+            batches += 1
+            self._log(f"第 {batches} 批提交成功：{part[0]['url']} … {part[-1]['url']}，累计 {ok}/{len(entries)} 条", quiet=False)
+        return {"ok": ok, "skipped": len(ips) - ok, "failed": len(entries) - ok, "total": len(ips)}
+
+    def batch_unblock_blacklist(self, ips: list, should_stop=None, chunk: int | None = None) -> dict:
+        """批量删黑名单：先拉一次全量列表本地筛选，存在且是启用黑名单的才批量删除。"""
+        targets, invalid = self._unique_targets(ips)
+        if invalid:
+            self._log(f"   {invalid} 个非法/空 IP 忽略", quiet=False)
+        if not targets:
+            return {"ok": 0, "skipped": len(ips), "failed": 0, "total": len(ips)}
+        by_url = {str(e.get("url") or ""): e for e in self.fetch_blacklist() if isinstance(e, dict)}
+        to_delete: list[str] = []
+        skipped = 0
+        for t in targets:
+            entry = by_url.get(t)
+            if entry is None:
+                self._log(f"   {t} 不在黑名单，跳过")
+                skipped += 1
+            elif not self._is_blocked(entry):
+                self._log(f"   {t} 是{entry_kind(entry)}，不动它")
+                skipped += 1
+            else:
+                to_delete.append(t)
+        if not to_delete:
+            return {"ok": 0, "skipped": skipped, "failed": 0, "total": len(ips)}
+        size = self._pick_chunk(len(to_delete), chunk)
+        self._log(
+            f"批量删除黑名单 {len(to_delete)} 条，分 {(len(to_delete) + size - 1) // size} 批提交（每批 {size} 条）",
+            quiet=False,
+        )
+        deleted = 0
+        batches = 0
+        pos = 0
+        while pos < len(to_delete):
+            if should_stop is not None and should_stop():
+                self._log(f"   已停止：剩余 {len(to_delete) - pos} 条未删除", quiet=False)
+                break
+            part = to_delete[pos:pos + size]
+            body = [{"type": "BLACK", "url": t} for t in part]
+            try:
+                self._batch_submit(body, "delete")
+            except ToolError as exc:
+                if self._halving_wont_help(str(exc)) or size <= 1:
+                    raise
+                size = max(1, size // 2)
+                self._log(f"   批量请求被拒（{str(exc)[:120]}），单次条数降为 {size} 重试本批")
+                continue
+            pos += len(part)
+            deleted += len(part)
+            batches += 1
+            self._log(f"第 {batches} 批删除成功：{part[0]} … {part[-1]}，累计 {deleted}/{len(to_delete)} 条", quiet=False)
+        return {"ok": deleted, "skipped": skipped, "failed": len(to_delete) - deleted, "total": len(ips)}
 
 

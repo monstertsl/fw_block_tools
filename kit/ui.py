@@ -309,30 +309,32 @@ class DeviceToolApp:
         op.columnconfigure(3, weight=1)
         ttk.Label(op, text="IP 地址").grid(row=0, column=0, sticky="e", padx=6, pady=6)
         ttk.Entry(op, textvariable=self._var("ip"), width=22).grid(row=0, column=1, sticky="we", padx=6, pady=6)
-        column = 2
         if spec.address_block:
-            ttk.Label(op, text="地址对象名").grid(row=0, column=column, sticky="e", padx=6, pady=6)
-            ttk.Entry(op, textvariable=self._var("address_name", "SenseMind-Block"), width=20).grid(
-                row=0, column=column + 1, sticky="we", padx=6, pady=6
-            )
-            column += 2
-        for text, handler in (("查询状态", self.on_query), ("封 禁", self.on_block), ("解 封", self.on_unblock)):
-            self._button(op, text, handler).grid(row=0, column=column, padx=6, pady=6)
-            column += 1
-        # 第二行：复选框 + 描述（与批量区保持一致）
+            self.vars["use_address"] = tk.BooleanVar(value=False)
+            self._op_addr_label = ttk.Label(op, text="地址对象名")
+            self._op_addr_entry = ttk.Entry(op, textvariable=self._var("address_name", "SenseMind-Block"), width=20)
+            self._op_buttons = [
+                self._button(op, text, handler)
+                for text, handler in (("查询状态", self.on_query), ("封 禁", self.on_block), ("解 封", self.on_unblock))
+            ]
+        else:
+            column = 2
+            for text, handler in (("查询状态", self.on_query), ("封 禁", self.on_block), ("解 封", self.on_unblock)):
+                self._button(op, text, handler).grid(row=0, column=column, padx=6, pady=6)
+                column += 1
         if spec.support_desc:
+            ttk.Label(op, text="描述").grid(row=1, column=2, sticky="e", padx=6, pady=(0, 6))
             ttk.Entry(op, textvariable=self._var("desc", DEFAULT_DESC), width=24).grid(
                 row=1, column=3, sticky="we", padx=6, pady=(0, 6)
             )
         if spec.address_block:
-            self.vars["use_address"] = tk.BooleanVar(value=False)
             ttk.Checkbutton(
                 op,
                 text="添加到地址（封禁写入网络对象）",
                 variable=self.vars["use_address"],
+                command=self._toggle_address_entry,
             ).grid(row=1, column=0, columnspan=2, sticky="w", padx=6, pady=(0, 6))
-            if spec.support_desc:
-                ttk.Label(op, text="描述").grid(row=1, column=2, sticky="e", padx=6, pady=(0, 6))
+            self._layout_op_address()
 
         if spec.support_list:
             table_box = ttk.LabelFrame(parent, text=spec.list_title)
@@ -366,10 +368,11 @@ class DeviceToolApp:
         if spec.support_desc:
             self._var("batch_desc", DEFAULT_DESC)
         if spec.address_block:
-            # 地址对象名与描述对调：地址对象名跟在间隔后面
-            ttk.Label(batch, text="地址对象名").grid(row=1, column=2, sticky="e", padx=6, pady=6)
-            ttk.Entry(batch, textvariable=self.vars["address_name"], width=22).grid(
-                row=1, column=3, sticky="we", padx=6, pady=6
+            self._batch_addr_label = ttk.Label(batch, text="地址对象名")
+            self._batch_addr_entry = ttk.Entry(batch, textvariable=self.vars["address_name"], width=22)
+            self._batch_desc_label = ttk.Label(batch, text="描述") if spec.support_desc else None
+            self._batch_desc_entry = (
+                ttk.Entry(batch, textvariable=self.vars["batch_desc"], width=22) if spec.support_desc else None
             )
         elif spec.support_desc:
             ttk.Label(batch, text="描述").grid(row=1, column=2, sticky="e", padx=6, pady=6)
@@ -386,12 +389,9 @@ class DeviceToolApp:
                 batch,
                 text="添加到地址（封禁写入网络对象）",
                 variable=self.vars["use_address"],
+                command=self._toggle_address_entry,
             ).grid(row=2, column=0, columnspan=2, sticky="w", padx=6, pady=(0, 6))
-            if spec.support_desc:
-                ttk.Label(batch, text="描述").grid(row=2, column=2, sticky="e", padx=6, pady=(0, 6))
-                ttk.Entry(batch, textvariable=self.vars["batch_desc"], width=22).grid(
-                    row=2, column=3, sticky="we", padx=6, pady=(0, 6)
-                )
+            self._layout_batch_address()
             info_row = 3
         ttk.Label(batch, textvariable=self.vars["batch_info"], foreground="#666666").grid(
             row=info_row, column=0, columnspan=7, sticky="w", padx=6, pady=(0, 6)
@@ -410,6 +410,45 @@ class DeviceToolApp:
         btn = ttk.Button(parent, text=text, command=handler)
         self.action_buttons.append(btn)
         return btn
+
+    # ---------- 「添加到地址」勾选联动 ----------
+
+    def _toggle_address_entry(self) -> None:
+        """勾选状态变化时，同步两个区的地址对象名显隐。"""
+        self._layout_op_address()
+        self._layout_batch_address()
+
+    def _layout_op_address(self) -> None:
+        """单 IP 区：勾选时地址对象名排在 IP 后、按钮右移；未勾选时隐藏、按钮左移补位。"""
+        if not getattr(self, "_op_addr_label", None):
+            return
+        if self.vars["use_address"].get():
+            self._op_addr_label.grid(row=0, column=2, sticky="e", padx=6, pady=6)
+            self._op_addr_entry.grid(row=0, column=3, sticky="we", padx=6, pady=6)
+            for offset, btn in enumerate(self._op_buttons):
+                btn.grid(row=0, column=4 + offset, padx=6, pady=6)
+        else:
+            self._op_addr_label.grid_remove()
+            self._op_addr_entry.grid_remove()
+            for offset, btn in enumerate(self._op_buttons):
+                btn.grid(row=0, column=2 + offset, padx=6, pady=6)
+
+    def _layout_batch_address(self) -> None:
+        """批量区：勾选时地址对象名占间隔旁一行、描述在下一行；未勾选时描述回到间隔旁。"""
+        if not getattr(self, "_batch_addr_label", None):
+            return
+        if self.vars["use_address"].get():
+            self._batch_addr_label.grid(row=1, column=2, sticky="e", padx=6, pady=6)
+            self._batch_addr_entry.grid(row=1, column=3, sticky="we", padx=6, pady=6)
+            if self._batch_desc_label is not None:
+                self._batch_desc_label.grid(row=2, column=2, sticky="e", padx=6, pady=(0, 6))
+                self._batch_desc_entry.grid(row=2, column=3, sticky="we", padx=6, pady=(0, 6))
+        else:
+            self._batch_addr_label.grid_remove()
+            self._batch_addr_entry.grid_remove()
+            if self._batch_desc_label is not None:
+                self._batch_desc_label.grid(row=1, column=2, sticky="e", padx=6, pady=6)
+                self._batch_desc_entry.grid(row=1, column=3, sticky="we", padx=6, pady=6)
 
     # ---------- 日志 ----------
 
@@ -693,6 +732,23 @@ class DeviceToolApp:
             return False
         return True
 
+    def _next_address_name(self, client) -> str | None:
+        """给当前地址对象名找下一个可用后缀（-2、-3…），已存在的跳过。
+
+        后台线程调用（仅查询设备），返回 None 表示找不到或查询失败。
+        """
+        base = str(client.address_name or "").strip()
+        if not base:
+            return None
+        for n in range(2, 100):
+            name = f"{base}-{n}"
+            try:
+                if client.get_address(name) is None:
+                    return name
+            except ToolError:
+                return None
+        return None
+
     def on_query(self) -> None:
         ip = self.vars["ip"].get().strip()
         if not self._require_ip(ip):
@@ -849,69 +905,6 @@ class DeviceToolApp:
     def on_batch_unblock(self) -> None:
         self._batch("unblock")
 
-    def _batch_remove_from_objects(self, client, ips: list) -> bool:
-        """批量解封的网络对象步骤：拉一次对象列表本地匹配，汇总后弹一次确认。
-
-        返回 False 表示用户取消，整个批量解封中止。
-        """
-        try:
-            groups = client.fetch_ipgroups()
-        except ToolError as exc:
-            self.log(f"网络对象反查失败（跳过该步，仅处理黑名单）：{exc}")
-            return True
-        hits: dict = {}
-        for ip in ips:
-            try:
-                found = client.locate_ip(ip, groups)
-            except Exception as exc:
-                self.log(f"{ip} 反查异常（跳过）：{type(exc).__name__}: {exc}")
-                continue
-            if found:
-                hits[ip] = found
-        if not hits:
-            self.log(f"网络对象反查：{len(ips)} 个 IP 都不在任何网络对象中")
-            return True
-        # 按对象汇总：对象名 → [(ip, hit)…]，弹多选框让用户挑对象
-        by_object: dict = {}
-        for ip, found in hits.items():
-            for hit in found:
-                by_object.setdefault(hit["name"], []).append((ip, hit))
-        options = [
-            (
-                f"「{name}」：{len(items)} 个 IP"
-                f"（独立行 {sum(1 for _ip, h in items if h['exact'])}，范围行内 {sum(1 for _ip, h in items if not h['exact'])}）",
-                (name, items),
-                any(h["exact"] for _ip, h in items),
-            )
-            for name, items in by_object.items()
-        ]
-        self.log.write(f"网络对象反查命中 {len(hits)} 个 IP：{'、'.join(by_object)}")
-        selected = self._select_from_dialog(
-            "从网络对象删除",
-            f"待解封 IP 中有 {len(hits)} 个位于以下网络对象，请勾选从哪些对象中删除：",
-            options,
-        )
-        if selected is None:
-            self.log.write("已取消从网络对象删除，整个批量解封中止")
-            return False
-        if not selected:
-            self.log.write("未勾选任何网络对象，跳过删除，继续黑名单流程")
-            return True
-        for name, items in selected:
-            for ip, hit in items:
-                if self.stop_event.is_set():
-                    self.log.write(f"网络对象删除已停止：「{name}」未处理完")
-                    return False
-                try:
-                    self.log.write(
-                        client.remove_from_object(name, ip)
-                        if hit["exact"]
-                        else f"{ip} 位于「{name}」的范围行 {hit['label']} 内，无法单独删除，跳过"
-                    )
-                except ToolError as exc:
-                    self.log.write(f"{ip} 从「{name}」删除失败：{exc}")
-        return True
-
     def on_stop(self) -> None:
         if self.busy:
             self.stop_event.set()
@@ -942,18 +935,68 @@ class DeviceToolApp:
             self.log.quiet = True  # 逐条请求明细只落文件，界面留结果行
             try:
                 client = self._client()
-                if action == "unblock" and not self._batch_remove_from_objects(client, ips):
-                    return {"ok": 0, "skipped": total, "failed": 0}
+                should_stop = lambda: self.stop_event.is_set()  # noqa: E731
+                # 批量解封不做网络对象反查，直接走黑名单删除；
+                # 地址对象保持旧的逐 IP 模式；不支持批量的设备回退逐 IP
+                if hasattr(client, "batch_block_blacklist"):
+                    try:
+                        if action == "block" and not (
+                            self.spec.address_block and self.vars["use_address"].get()
+                        ):
+                            return client.batch_block_blacklist(ips, desc, should_stop)
+                        if action == "unblock":
+                            return client.batch_unblock_blacklist(ips, should_stop)
+                    except ToolError as exc:
+                        self.log.write(f"批量接口不可用（{str(exc)[:160]}），回退逐 IP 模式")
                 ok = skipped = failed = 0
+                address_mode = action == "block" and self.spec.address_block and self.vars["use_address"].get()
                 for index, ip in enumerate(ips, 1):
                     if self.stop_event.is_set():
                         self.log.write(f"已停止：剩余 {total - index + 1} 个未处理")
                         break
                     try:
-                        message = client.block(ip, desc) if action == "block" else client.unblock(ip)
+                        if action == "block":
+                            if hasattr(client, "batch_block_blacklist"):
+                                # 批量地址模式不做反查提示，提速
+                                message = client.block(ip, desc, hint=False)
+                            else:
+                                message = client.block(ip, desc)
+                        else:
+                            message = client.unblock(ip)
                     except ToolError as exc:
                         failed += 1
                         self.log.write(f"[{index}/{total}] {ip} 失败：{exc}")
+                        # 地址模式：设备行数上限 → 弹窗询问换下一个对象续写剩余 IP
+                        if (
+                            address_mode
+                            and hasattr(client, "_looks_like_limit_error")
+                            and client._looks_like_limit_error(str(exc))
+                        ):
+                            remaining = total - index
+                            new_name = self._next_address_name(client)
+                            if new_name and self._confirm_from_worker(
+                                "地址对象已达上限",
+                                f"地址对象「{client.address_name}」已达设备行数上限。\n\n"
+                                f"是否改用新地址对象「{new_name}」继续写入剩余的 {remaining} 个 IP？",
+                            ):
+                                client.address_name = new_name
+                                self.root.after(0, lambda n=new_name: self.vars["address_name"].set(n))
+                                self.log.write(f"改用新地址对象 {new_name}，后续 IP 写入该对象（不存在会询问新建）")
+                                # 当前这个 IP 立即重试写入新对象
+                                try:
+                                    message = client.block(ip, desc, hint=False)
+                                    failed -= 1
+                                    if "跳过" in message:
+                                        skipped += 1
+                                    else:
+                                        ok += 1
+                                    self.log.write(f"[{index}/{total}] {message}")
+                                except ToolError as retry_exc:
+                                    self.log.write(f"[{index}/{total}] {ip} 写入 {new_name} 失败：{retry_exc}")
+                            else:
+                                self.log.write(f"不换对象，剩余 {remaining} 个 IP 未处理")
+                                failed += remaining
+                                break
                     except Exception as exc:
                         failed += 1
                         self.log.write(f"[{index}/{total}] {ip} 异常：{type(exc).__name__}: {exc}")
