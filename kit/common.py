@@ -15,7 +15,7 @@ import zipfile
 
 IPV4_RE = re.compile(r"(?:\d{1,3}\.){3}\d{1,3}")
 MAX_CELL_VALUES = 200_000  # 单文件最多扫描的单元格数，防止误选超大文件把界面拖死
-UI_LINE_LIMIT = 1500  # 界面单行最多显示字符数，完整内容始终写日志文件
+UI_LINE_LIMIT = 240  # 界面单行最多显示字符数，完整内容始终写日志文件
 LOG_DIR_NAME = "logs"  # 日志统一落 fw_block_tools/logs/，根目录只留代码
 SECRET_KEYS = ("password", "passwd", "token", "secret", "authid", "sessionid", "coderun", "code_run")
 

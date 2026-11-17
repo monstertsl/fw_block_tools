@@ -37,6 +37,8 @@ SANGFOR = DeviceEntry(
         log_file="sangfor_af_tool.log",
         hint="命名空间默认 @namespace（根系统），多虚拟系统时填实际值",
         extra_fields=(("namespace", "命名空间", DEFAULT_NAMESPACE),),
+        # 「添加到地址」封禁方式：勾选后封禁写入 网络对象-地址（ipgroups），解封即从地址删除成员
+        address_block=True,
         # 不提供设备侧列表：该设备黑名单动辄上万条（真机 10803 条/55 页），翻页全量拉取会把界面和日志拖死；
         # 是否已封禁按单 IP 查 `GET /whiteblacklist/<ip>` 就够，与奇安信、天融信等保持一致
         support_list=False,
